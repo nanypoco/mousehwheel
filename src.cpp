@@ -1,15 +1,33 @@
 #include <windows.h>
-#include <filter.h>
+#include <commctrl.h>
+#include <winuser.h>
+#include "aviutl/filter.h"
+#include <iostream>
+
+const TCHAR* track_name[] = { "‰¡Š´“x","cè‡’l" };
+int track_default[] = { 100,20 };
+int track_s[] = { 20,1 };
+int track_e[] = { +1000,+200 };
+constexpr auto track_n = 2;
+
+const TCHAR* check_name[] = { "‰¡ƒzƒC[ƒ‹‘Î‰","alt“ü‚ê‘Ö‚¦","Š´“x/è‡’l•ÏX","İ’è‚ğ•Û‘¶"};
+int check_default[] = { 0,0,0,-1 };
+constexpr auto check_n = 4;
 
 FILTER_DLL filter = {
-    FILTER_FLAG_ALWAYS_ACTIVE | FILTER_FLAG_NO_CONFIG,
+    FILTER_FLAG_ALWAYS_ACTIVE,
     NULL,NULL,
-    const_cast<char*>("ãƒã‚¦ã‚¹æ¨ªãƒ›ã‚¤ãƒ¼ãƒ«"),
-    NULL,NULL,NULL,
-    NULL,NULL,
-    NULL,NULL,NULL,
+    const_cast<char*>("ƒ}ƒEƒX‰¡ƒzƒC[ƒ‹+"),
+    track_n, (TCHAR**)track_name, track_default,
+    track_s, track_e,
+    check_n, (TCHAR**)check_name, check_default,
     NULL,
-    func_init,
+    func_init, func_exit, func_update,
+    func_WndProc,
+    NULL,NULL,
+    NULL,NULL,NULL,
+    NULL,NULL,NULL,NULL,NULL,NULL,
+    NULL, func_project_load, func_project_save,
 };
 EXTERN_C FILTER_DLL __declspec(dllexport)* __stdcall GetFilterTable(void) {
     return &filter;
@@ -18,6 +36,13 @@ EXTERN_C FILTER_DLL __declspec(dllexport)* __stdcall GetFilterTable(void) {
 
 static int exedit_base;
 BOOL(*exedit_func_WndProc)(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam, void* editp, void* fp);
+static int scroll_rate_w;
+static int scroll_rate_h;
+static int hwheel_accumulation;
+static int enable_hwheel;
+static int enable_exchange_alt;
+static int enable_change_rate;
+
 
 FILTER* get_exeditfp(FILTER* fp) {
     SYS_INFO si;
@@ -26,7 +51,7 @@ FILTER* get_exeditfp(FILTER* fp) {
     for (int i = 0; i < si.filter_n; i++) {
         FILTER* tfp = (FILTER*)fp->exfunc->get_filterp(i);
         if (tfp->information != NULL) {
-            if (!strcmp(tfp->information, "æ‹¡å¼µç·¨é›†(exedit) version 0.92 by ï¼«ï¼¥ï¼®ãã‚“")) return tfp;
+            if (!strcmp(tfp->information, "Šg’£•ÒW(exedit) version 0.92 by ‚j‚d‚m‚­‚ñ")) return tfp;
         }
     }
     return NULL;
@@ -44,16 +69,21 @@ BOOL exedit_Replace8(int exedit_address, byte new_8) {
 }
 
 
-
 BOOL exedit_func_WndProc_wrap(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam, void* editp, void* fp) {
-    if (message == WM_MOUSEHWHEEL) {
+    if (message == WM_MOUSEHWHEEL && enable_hwheel == 1) {
         if (((FILTER*)fp)->exfunc->is_saving(editp) == 0) {
             if ((wparam & 8) == 0) {
                 int wheel_right = (short)(wparam >> 0x10);
                 if (wheel_right != 0) {
                     int* timeline_zoom = (int*)(exedit_base + 0xa3fc8);
                     int* timeline_pos = (int*)(exedit_base + 0x1a52f0);
-                    reinterpret_cast<void(__cdecl*)(int)>(exedit_base + 0x38c70)(*timeline_pos + (int)((wheel_right * 2 - 1 & 0xffffff38) + 100) * 10000 / *timeline_zoom);
+                    // Š´“x‚ª—LŒø‚©‚Ç‚¤‚©Ø‚è‘Ö‚¦‚é
+                    if (enable_change_rate == 1) {
+                        reinterpret_cast<void(__cdecl*)(int)>(exedit_base + 0x38c70)(*timeline_pos + (int)(wheel_right * scroll_rate_w * 100 / *timeline_zoom));
+                    }
+                    else {
+                        reinterpret_cast<void(__cdecl*)(int)>(exedit_base + 0x38c70)(*timeline_pos + (int)(((0 < wheel_right) - 1 & 0xffffff38) + 100) * 10000 / *timeline_zoom);
+                    }
                     return 0;
                 }
             }
@@ -63,18 +93,279 @@ BOOL exedit_func_WndProc_wrap(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpa
 }
 
 
+// ƒzƒC[ƒ‹ˆÚ“®—Ê‚ğ•Û‘¶‚µ‚Ä‚µ‚«‚¢’l‚ğ’´‚¦‚½‚çƒXƒNƒ[ƒ‹‚·‚é
+int hscroll_threshold(int wheel) {
+    // İ’è‚ª–³Œø‚È‚ç–³ğŒ‚Å1ƒŒƒCƒ„[•ªˆÚ“®‚³‚¹‚é
+    if (enable_change_rate == 0) { return (wheel < 0) * 2 - 1; }
+
+    // ‘O‰ñ‚Æ‹tŒü‚«‚È‚ç’l‚ğƒŠƒZƒbƒg
+    if (hwheel_accumulation < 0 != wheel < 0) {
+        hwheel_accumulation = 0;
+    }
+    hwheel_accumulation += wheel;
+
+    if (scroll_rate_h < abs(hwheel_accumulation)) {
+        int hscroll = hwheel_accumulation / scroll_rate_h; // ˆÚ“®”
+        hwheel_accumulation %= scroll_rate_h;
+        return -hscroll;
+    }
+    return 0;
+}
+
+
 BOOL func_init(FILTER* fp) {
     FILTER* exeditfp = get_exeditfp(fp);
     if (exeditfp == NULL) {
-        MessageBoxA(fp->hwnd, "æ‹¡å¼µç·¨é›†0.92ãŒè¦‹ã¤ã‹ã‚Šã¾ã›ã‚“ã§ã—ãŸ", fp->name, MB_OK);
+        MessageBoxA(fp->hwnd, "Šg’£•ÒW0.92‚ªŒ©‚Â‚©‚è‚Ü‚¹‚ñ‚Å‚µ‚½", fp->name, MB_OK);
         return TRUE;
     }
     exedit_base = (int)exeditfp->dll_hinst;
 
-    exedit_Replace8(0x3decd, 0x7c); // ç¸¦ãƒ›ã‚¤ãƒ¼ãƒ«ã‚’ç¸¦ã‚¹ã‚¯ãƒ­ãƒ¼ãƒ«ã«ã€Alt+ç¸¦ãƒ›ã‚¤ãƒ¼ãƒ«ã‚’æ¨ªã‚¹ã‚¯ãƒ­ãƒ¼ãƒ«ã«ã™ã‚‹
+    // aviutl.ini‚©‚çİ’è‚ğ“Ç‚Ş
+    fp->track[0] = fp->exfunc->ini_load_int(fp, (LPSTR)"scroll_rate_w", fp->track_default[0]);
+    fp->track[1] = fp->exfunc->ini_load_int(fp, (LPSTR)"scroll_rate_h", fp->track_default[1]);
+    fp->check[0] = fp->exfunc->ini_load_int(fp, (LPSTR)"enable_hwheel", fp->check_default[0]);
+    fp->check[1] = fp->exfunc->ini_load_int(fp, (LPSTR)"enable_exchange_alt", fp->check_default[1]);
+    fp->check[2] = fp->exfunc->ini_load_int(fp, (LPSTR)"enable_change_rate", fp->check_default[2]);
+    scroll_rate_w = fp->track[0];
+    scroll_rate_h = fp->track[1];
+    enable_hwheel = fp->check[0];
+    enable_exchange_alt = fp->check[1];
+    enable_change_rate = fp->check[2];
+    hwheel_accumulation = 0;
 
+    // cƒzƒC[ƒ‹‚ğcƒXƒNƒ[ƒ‹‚ÉAAlt+cƒzƒC[ƒ‹‚ğ‰¡ƒXƒNƒ[ƒ‹‚É‚·‚é
+    if (enable_exchange_alt == 1) {
+        exedit_Replace8(0x3decd, 0x7c);
+    }
+
+    // ‰¡ƒzƒC[ƒ‹‚É‘Î‰
     exedit_func_WndProc = exeditfp->func_WndProc;
     exeditfp->func_WndProc = exedit_func_WndProc_wrap;
 
+
+    // c•ûŒü‚ÌƒXƒNƒ[ƒ‹‚É•K—v‚ÈƒzƒC[ƒ‹ˆÚ“®—Ê‚ğİ’è
+    static char executable_memory[] =
+        "\x50"          // push eax
+        "\xe8XXXX"      // call &hscroll_threshold
+        "\x83\xc4\x04"  // add esp,4
+        "\x33\xd2"      // xor edx,edx
+        "\x85\xc0"      // test eax,eax
+        "\x0f\x84XXXX"  // jz exedit_base + 0x3def4 // 0‚ª•Ô‚Á‚½‚çˆÚ“®‚µ‚È‚¢
+        "\x89\xc2"      // mov edx,eax
+        "\xe9XXXX"      // jmp exedit_base + 0x3dede
+        ;
+
+    // ƒWƒƒƒ“ƒv‚³‚¹‚é
+    {
+        char code[] = "\xe9XXXX";
+        uint32_t ptr = (uint32_t)&executable_memory - (exedit_base + 0x3dede);
+        memcpy_s(code + 1, 4, (void*)&ptr, 4);
+        for (int i = 0; i < sizeof(code) - 1; i++) {
+            exedit_Replace8(0x3ded9 + i, code[i]);
+        }
+    }
+
+    // ˆÚ“®æ‘‚«‚İ
+    {
+        uint32_t ptr;
+        ptr = (uint32_t)(&hscroll_threshold) - (uint32_t)(&executable_memory) - 6;
+        memcpy(executable_memory + 2, &ptr, 4);
+        ptr = (uint32_t)(exedit_base + 0x43b4c - ((uint32_t)executable_memory + 15 + 4));
+        memcpy(executable_memory + 15, &ptr, 4);
+        ptr = (uint32_t)(exedit_base + 0x3dede - ((uint32_t)executable_memory + 22 + 4));
+        memcpy(executable_memory + 22, &ptr, 4);
+    }
+    DWORD oldProtect;
+    VirtualProtect(&executable_memory, sizeof(executable_memory), PAGE_EXECUTE_READWRITE, &oldProtect);
+
+
+    // ‰¡ƒXƒNƒ[ƒ‹‚ÌŒÅ’è’l‚ğ‚â‚ß‚ÄŠ´“x‚ğİ’è‚·‚é
+    //exedit_Replace8(0x3df2a, 0x2);  // *10000‚ğ*100‚É‚·‚é1
+    {
+        static char executable_memory2[] =
+            "\x8b\x0dXXXX"              // mov ecx,DWORD PTR[&enable_change_rate]
+            "\x85\xc9"                  // test ecx,ecx
+            "\x74\x0f"                  // jz default:
+            "\x0f\xaf\x05XXXX"          // imul eax,DWORD PTR[&scroll_rate_w] // ˆÚ“®—Ê*rate*100
+            "\x6b\xc0\x64"              // imul eax,eax,100
+            "\xe9XXXX"                  // jmp exedit_base + 0x3df2b
+                                    // default: // Œ³‚Ìˆ—
+            "\x85\xc0"                  // test eax,eax
+            "\x0f\x9e\xc2"              // setle dl
+            "\xe9XXXX"                  // jmp exedit_base + 0x3df13
+            ;
+        uint32_t ptr;
+        ptr = (uint32_t)(&enable_change_rate);
+        memcpy(executable_memory2 + 2, &ptr, 4);
+        ptr = (uint32_t)(&scroll_rate_w);
+        memcpy(executable_memory2 + 13, &ptr, 4);
+        ptr = (uint32_t)(exedit_base + 0x3df2b - ((uint32_t)executable_memory2 + 21 + 4));
+        memcpy(executable_memory2 + 21, &ptr, 4);
+        ptr = (uint32_t)(exedit_base + 0x3df13 - ((uint32_t)executable_memory2 + sizeof(executable_memory2) - 5 + 4));
+        memcpy(executable_memory2 + sizeof(executable_memory2) - 5, &ptr, 4);
+
+        DWORD oldProtect;
+        VirtualProtect(&executable_memory2, sizeof(executable_memory2), PAGE_EXECUTE_READWRITE, &oldProtect);
+
+        char code[] = "\xe9XXXX";
+        ptr = (uint32_t)&executable_memory2 - (exedit_base + 0x3df0e) - 5;
+        memcpy_s(code + 1, 4, (void*)&ptr, 4);
+        for (int i = 0; i < sizeof(code) - 1; i++) {
+            exedit_Replace8(0x3df0e + i, code[i]);
+        }
+    }
+
+#if 0
+    RAWINPUTDEVICE device[1];
+    device[0].usUsagePage = 0x01;	// ƒ}ƒEƒX—p‚Ì’è”
+    device[0].usUsage = 0x02;		// ƒ}ƒEƒX—p‚Ì’è”
+    device[0].dwFlags = RIDEV_EXINPUTSINK;
+    device[0].hwndTarget = fp->hwnd;
+    RegisterRawInputDevices(device, 1, sizeof(device[0]));
+#endif
+
     return TRUE;
+}
+
+
+BOOL func_WndProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam, void* editp, FILTER* fp) {
+    switch (message) {
+    case WM_FILTER_COMMAND:
+    case WM_COMMAND:
+        // •Û‘¶ƒ{ƒ^ƒ“‚ª‰Ÿ‚³‚ê‚½
+        if (LOWORD(wparam) == MID_FILTER_BUTTON + 3) {
+            func_exit(fp);
+        }
+        break;
+
+#if 0
+    case WM_INPUT:
+
+        UINT dwSize = 0;
+        RAWINPUTHEADER head;
+        RAWMOUSE mouse;
+        GetRawInputData((HRAWINPUT)lparam, RID_INPUT, NULL, &dwSize, sizeof(RAWINPUTHEADER));
+
+        unsigned char* lpb = new unsigned char[dwSize];
+        if (lpb == NULL)
+        {
+            // ƒGƒ‰[
+            return 0;
+        }
+
+        if (GetRawInputData((HRAWINPUT)lparam, RID_INPUT, lpb, &dwSize, sizeof(RAWINPUTHEADER)) != dwSize)
+        {
+            // ƒGƒ‰[
+        }
+
+        RAWINPUT* raw = (RAWINPUT*)lpb;
+        if (raw->header.dwType == RIM_TYPEMOUSE)
+        {
+             mouse = raw->data.mouse;
+             head = raw->header;
+             if (mouse.usButtonFlags == RI_MOUSE_WHEEL) {
+                 std::cout << "h:" << (SHORT)mouse.usButtonData << std::endl;
+             }
+             if (mouse.usButtonFlags == RI_MOUSE_HWHEEL) {
+                 std::cout << "w:" << (SHORT)mouse.usButtonData << std::endl;
+             }
+        }
+
+        delete[] lpb;
+        break;
+#endif
+
+    }
+    return 0;
+}
+
+
+// ini‚Éİ’è‚ğ•Û‘¶
+BOOL func_exit(FILTER* fp) {
+    fp->exfunc->ini_save_int(fp, (LPSTR)"scroll_rate_w", scroll_rate_w);
+    fp->exfunc->ini_save_int(fp, (LPSTR)"scroll_rate_h", scroll_rate_h);
+    fp->exfunc->ini_save_int(fp, (LPSTR)"enable_hwheel", enable_hwheel);
+    fp->exfunc->ini_save_int(fp, (LPSTR)"enable_exchange_alt", enable_exchange_alt);
+    fp->exfunc->ini_save_int(fp, (LPSTR)"enable_change_rate", enable_change_rate);
+    return 0;
+}
+
+
+// ini‚©‚çİ’è‚ğ“Ç‚İ‚İ
+BOOL func_project_load(FILTER* fp, void* editp, void* data, int size) {
+    return 1;
+    fp->track[0] = fp->exfunc->ini_load_int(fp, (LPSTR)"scroll_rate_w", fp->track_default[0]);
+    fp->track[1] = fp->exfunc->ini_load_int(fp, (LPSTR)"scroll_rate_h", fp->track_default[1]);
+    fp->check[0] = fp->exfunc->ini_load_int(fp, (LPSTR)"enable_hwheel", fp->check_default[0]);
+    fp->check[1] = fp->exfunc->ini_load_int(fp, (LPSTR)"enable_exchange_alt", fp->check_default[1]);
+    fp->check[2] = fp->exfunc->ini_load_int(fp, (LPSTR)"enable_change_rate", fp->check_default[2]);
+    fp->exfunc->filter_window_update(fp);
+    return 1;
+}
+
+// aup‚É‚Í‰½‚à‘‚«‚Ü‚È‚¢
+BOOL func_project_save(FILTER* fp, void* editp, void* data, int* size) {
+    return 0;
+}
+
+
+BOOL func_update(FILTER* fp, int status){
+    HWND tr = 0;
+    switch (status) {
+    case FILTER_UPDATE_STATUS_ALL:
+        // AviUtl‚ªƒvƒƒWƒFƒNƒgØ‚è‘Ö‚¦‚ÅŸè‚É‘‚«Š·‚¦‚é‚â‚Â‚ğX‚ÉŒ³‚Ì’l‚É‘‚«Š·‚¦‚é
+        fp->track[0] = scroll_rate_w;
+        fp->track[1] = scroll_rate_h;
+        fp->check[0] = enable_hwheel;
+        fp->check[1] = enable_exchange_alt;
+        fp->check[2] = enable_change_rate;
+
+        // ƒ_ƒCƒAƒƒO‚Ì•”•i‚à
+        tr = FindWindowEx(fp->hwnd, 0, TRACKBAR_CLASS, track_name[0]);
+        SendMessage(tr, TBM_SETPOS, true, scroll_rate_w);
+        tr = FindWindowEx(fp->hwnd, tr, "EDIT", 0);
+        SetDlgItemInt(fp->hwnd, GetDlgCtrlID(tr), scroll_rate_w, false);
+
+        tr = FindWindowEx(fp->hwnd, 0, TRACKBAR_CLASS, track_name[1]);
+        SendMessage(tr, TBM_SETPOS, true, scroll_rate_h);
+        tr = FindWindowEx(fp->hwnd, tr, "EDIT", 0);
+        SetDlgItemInt(fp->hwnd, GetDlgCtrlID(tr), scroll_rate_h, false);
+
+        SendMessage(FindWindowEx(fp->hwnd, 0, 0, check_name[0]), BM_SETCHECK, enable_hwheel, 0);
+        SendMessage(FindWindowEx(fp->hwnd, 0, 0, check_name[1]), BM_SETCHECK, enable_exchange_alt, 0);
+        SendMessage(FindWindowEx(fp->hwnd, 0, 0, check_name[2]), BM_SETCHECK, enable_change_rate, 0);
+
+        break;
+
+    // ’l‚ª•ÏX‚³‚ê‚½‚ç”½‰f
+    case FILTER_UPDATE_STATUS_TRACK + 0:
+        scroll_rate_w = fp->track[0];
+        break;
+
+    case FILTER_UPDATE_STATUS_TRACK + 1:
+        scroll_rate_h = fp->track[1];
+        break;
+
+    case FILTER_UPDATE_STATUS_CHECK + 0:
+        enable_hwheel = fp->check[0];
+        break;
+
+    case FILTER_UPDATE_STATUS_CHECK + 1:
+        enable_exchange_alt = fp->check[1];
+        // “®“I‘‚«Š·‚¦‚Á‚Ä‚Ç‚¤‚È‚ñ
+        if (enable_exchange_alt == 1) {
+            exedit_Replace8(0x3decd, 0x7c); // cƒzƒC[ƒ‹‚ğcƒXƒNƒ[ƒ‹‚ÉAAlt+cƒzƒC[ƒ‹‚ğ‰¡ƒXƒNƒ[ƒ‹‚É‚·‚é
+        }
+        else {
+            exedit_Replace8(0x3decd, 0x7d); // Œ³‚É–ß‚·
+        }
+        break;
+
+    case FILTER_UPDATE_STATUS_CHECK + 2:
+        enable_change_rate = fp->check[2];
+        break;
+    }
+
+    return 0;
 }
