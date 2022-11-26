@@ -104,6 +104,7 @@ int hscroll_threshold(int wheel) {
     }
     hwheel_accumulation += wheel;
 
+    // 蓄積値がしきい値を超えたら移動させる
     if (scroll_rate_h < abs(hwheel_accumulation)) {
         int hscroll = hwheel_accumulation / scroll_rate_h; // 移動数
         hwheel_accumulation %= scroll_rate_h;
@@ -152,14 +153,13 @@ BOOL func_init(FILTER* fp) {
         "\x33\xd2"      // xor edx,edx
         "\x85\xc0"      // test eax,eax
         "\x0f\x84XXXX"  // jz exedit_base + 0x3def4 // 0が返ったら移動しない
-        "\x89\xc2"      // mov edx,eax
-        "\xe9XXXX"      // jmp exedit_base + 0x3dede
+        "\xe9XXXX"      // jmp exedit_base + 0x3dee4
         ;
 
     // ジャンプさせる
     {
         char code[] = "\xe9XXXX";
-        uint32_t ptr = (uint32_t)&executable_memory - (exedit_base + 0x3dede);
+        uint32_t ptr = (uint32_t)&executable_memory - (exedit_base + 0x3ded9) - 5;
         memcpy_s(code + 1, 4, (void*)&ptr, 4);
         for (int i = 0; i < sizeof(code) - 1; i++) {
             exedit_Replace8(0x3ded9 + i, code[i]);
@@ -173,8 +173,8 @@ BOOL func_init(FILTER* fp) {
         memcpy(executable_memory + 2, &ptr, 4);
         ptr = (uint32_t)(exedit_base + 0x43b4c - ((uint32_t)executable_memory + 15 + 4));
         memcpy(executable_memory + 15, &ptr, 4);
-        ptr = (uint32_t)(exedit_base + 0x3dede - ((uint32_t)executable_memory + 22 + 4));
-        memcpy(executable_memory + 22, &ptr, 4);
+        ptr = (uint32_t)(exedit_base + 0x3dee4 - ((uint32_t)executable_memory + 20 + 4));
+        memcpy(executable_memory + 20, &ptr, 4);
     }
     DWORD oldProtect;
     VirtualProtect(&executable_memory, sizeof(executable_memory), PAGE_EXECUTE_READWRITE, &oldProtect);
