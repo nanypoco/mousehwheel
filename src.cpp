@@ -27,7 +27,7 @@ FILTER_DLL filter = {
     NULL,NULL,
     NULL,NULL,NULL,
     NULL,NULL,NULL,NULL,NULL,NULL,
-    NULL, func_project_load, func_project_save,
+    NULL, NULL, func_project_save,
 };
 EXTERN_C FILTER_DLL __declspec(dllexport)* __stdcall GetFilterTable(void) {
     return &filter;
@@ -36,12 +36,12 @@ EXTERN_C FILTER_DLL __declspec(dllexport)* __stdcall GetFilterTable(void) {
 
 static int exedit_base;
 BOOL(*exedit_func_WndProc)(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam, void* editp, void* fp);
-static int scroll_rate_w;
-static int scroll_rate_h;
-static int hwheel_accumulation;
-static int enable_hwheel;
-static int enable_exchange_alt;
-static int enable_change_rate;
+static int scroll_rate_w;       // 横感度
+static int scroll_rate_h;       // 縦しきい値
+static int hwheel_accumulation; // 縦の移動量累計
+static int enable_hwheel;       // 横ホイールを有効にするか
+static int enable_exchange_alt; // Altの動作を入れ替えるか
+static int enable_change_rate;  // 感度/しきい値の設定/変更を有効にするか
 
 
 FILTER* get_exeditfp(FILTER* fp) {
@@ -95,7 +95,7 @@ BOOL exedit_func_WndProc_wrap(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpa
 
 // ホイール移動量を保存してしきい値を超えたらスクロールする
 int hscroll_threshold(int wheel) {
-    // 設定が無効なら無条件で1レイヤー分移動させる
+    // 設定が無効なら単に1レイヤー分移動させる(デフォルト動作と同じ)
     if (enable_change_rate == 0) { return (wheel < 0) * 2 - 1; }
 
     // 前回と逆向きなら値をリセット
@@ -133,6 +133,7 @@ BOOL func_init(FILTER* fp) {
     enable_hwheel = fp->check[0];
     enable_exchange_alt = fp->check[1];
     enable_change_rate = fp->check[2];
+
     hwheel_accumulation = 0;
 
     // 縦ホイールを縦スクロールに、Alt+縦ホイールを横スクロールにする
@@ -292,9 +293,9 @@ BOOL func_exit(FILTER* fp) {
 }
 
 
+#if 0
 // iniから設定を読み込み
 BOOL func_project_load(FILTER* fp, void* editp, void* data, int size) {
-    return 1;
     fp->track[0] = fp->exfunc->ini_load_int(fp, (LPSTR)"scroll_rate_w", fp->track_default[0]);
     fp->track[1] = fp->exfunc->ini_load_int(fp, (LPSTR)"scroll_rate_h", fp->track_default[1]);
     fp->check[0] = fp->exfunc->ini_load_int(fp, (LPSTR)"enable_hwheel", fp->check_default[0]);
@@ -303,6 +304,8 @@ BOOL func_project_load(FILTER* fp, void* editp, void* data, int size) {
     fp->exfunc->filter_window_update(fp);
     return 1;
 }
+#endif
+
 
 // aupには何も書き込まない
 BOOL func_project_save(FILTER* fp, void* editp, void* data, int* size) {
@@ -338,7 +341,7 @@ BOOL func_update(FILTER* fp, int status){
 
         break;
 
-    // 値が変更されたら反映
+    // 値が個別に変更されたら反映
     case FILTER_UPDATE_STATUS_TRACK + 0:
         scroll_rate_w = fp->track[0];
         break;
