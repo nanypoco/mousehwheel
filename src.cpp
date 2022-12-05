@@ -4,11 +4,11 @@
 #include "aviutl/filter.h"
 #include <iostream>
 
-const TCHAR* track_name[] = { "横感度","縦閾値" };
-int track_default[] = { 100,20 };
-int track_s[] = { 20,1 };
-int track_e[] = { +1000,+200 };
-constexpr auto track_n = 2;
+const TCHAR* track_name[] = { "横感度","縦閾値","ズーム閾値" };
+int track_default[] = { 100,20,20 };
+int track_s[] = { 20,1,1 };
+int track_e[] = { +1000,+200,+200 };
+constexpr auto track_n = 3;
 
 const TCHAR* check_name[] = { "横ホイール対応","alt入れ替え","感度/閾値変更","設定を保存"};
 int check_default[] = { 0,0,0,-1 };
@@ -38,7 +38,9 @@ static int exedit_base;
 BOOL(*exedit_func_WndProc)(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam, void* editp, void* fp);
 static int scroll_rate_w;       // 横感度
 static int scroll_rate_h;       // 縦しきい値
+static int scroll_rate_zoom;    // ズームしきい値
 static int hwheel_accumulation; // 縦の移動量累計
+static int zoom_accumulation;   // ctrl+ホイールの移動量累計
 static int enable_hwheel;       // 横ホイールを有効にするか
 static int enable_exchange_alt; // Altの動作を入れ替えるか
 static int enable_change_rate;  // 感度/しきい値の設定/変更を有効にするか
@@ -96,7 +98,7 @@ BOOL exedit_func_WndProc_wrap(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpa
 // ホイール移動量を保存してしきい値を超えたらスクロールする
 int hscroll_threshold(int wheel) {
     // 設定が無効なら単に1レイヤー分移動させる(デフォルト動作と同じ)
-    if (enable_change_rate == 0) { return (wheel < 0) * 2 - 1; }
+    if (enable_change_rate == 0 || scroll_rate_h == 0) { return (wheel < 0) * 2 - 1; }
 
     // 前回と逆向きなら値をリセット
     if (hwheel_accumulation < 0 != wheel < 0) {
@@ -114,6 +116,27 @@ int hscroll_threshold(int wheel) {
 }
 
 
+// ctrl+ホイール移動量を保存してしきい値を超えたら拡大率を変更する
+int zoom_threshold(int wheel) {
+    // 設定が無効なら単に1移動させる(デフォルト動作と同じ)
+    if (enable_change_rate == 0 || scroll_rate_zoom == 0) { return (wheel > 0) * 2 - 1; }
+
+    // 前回と逆向きなら値をリセット
+    if (zoom_accumulation < 0 != wheel < 0) {
+        zoom_accumulation = 0;
+    }
+    zoom_accumulation += wheel;
+
+    // 蓄積値がしきい値を超えたら移動させる
+    if (scroll_rate_zoom < abs(zoom_accumulation)) {
+        int zoom = zoom_accumulation / scroll_rate_zoom; // 移動数
+        zoom_accumulation %= scroll_rate_zoom;
+        return zoom;
+    }
+    return 0;
+}
+
+
 BOOL func_init(FILTER* fp) {
     FILTER* exeditfp = get_exeditfp(fp);
     if (exeditfp == NULL) {
@@ -125,16 +148,19 @@ BOOL func_init(FILTER* fp) {
     // aviutl.iniから設定を読む
     fp->track[0] = fp->exfunc->ini_load_int(fp, (LPSTR)"scroll_rate_w", fp->track_default[0]);
     fp->track[1] = fp->exfunc->ini_load_int(fp, (LPSTR)"scroll_rate_h", fp->track_default[1]);
+    fp->track[2] = fp->exfunc->ini_load_int(fp, (LPSTR)"scroll_rate_zoom", fp->track_default[2]);
     fp->check[0] = fp->exfunc->ini_load_int(fp, (LPSTR)"enable_hwheel", fp->check_default[0]);
     fp->check[1] = fp->exfunc->ini_load_int(fp, (LPSTR)"enable_exchange_alt", fp->check_default[1]);
     fp->check[2] = fp->exfunc->ini_load_int(fp, (LPSTR)"enable_change_rate", fp->check_default[2]);
     scroll_rate_w = fp->track[0];
     scroll_rate_h = fp->track[1];
+    scroll_rate_zoom = fp->track[2];
     enable_hwheel = fp->check[0];
     enable_exchange_alt = fp->check[1];
     enable_change_rate = fp->check[2];
 
     hwheel_accumulation = 0;
+    zoom_accumulation = 0;
 
     // 縦ホイールを縦スクロールに、Alt+縦ホイールを横スクロールにする
     if (enable_exchange_alt == 1) {
@@ -153,22 +179,10 @@ BOOL func_init(FILTER* fp) {
         "\x83\xc4\x04"  // add esp,4
         "\x33\xd2"      // xor edx,edx
         "\x85\xc0"      // test eax,eax
-        "\x0f\x84XXXX"  // jz exedit_base + 0x3def4 // 0が返ったら移動しない
+        "\x0f\x84XXXX"  // jz exedit_base + 0x43b4c // 0が返ったら移動しない
         "\xe9XXXX"      // jmp exedit_base + 0x3dee4
         ;
-
-    // ジャンプさせる
-    {
-        char code[] = "\xe9XXXX";
-        uint32_t ptr = (uint32_t)&executable_memory - (exedit_base + 0x3ded9) - 5;
-        memcpy_s(code + 1, 4, (void*)&ptr, 4);
-        for (int i = 0; i < sizeof(code) - 1; i++) {
-            exedit_Replace8(0x3ded9 + i, code[i]);
-        }
-    }
-
-    // 移動先書き込み
-    {
+    { // 移動先書き込み
         uint32_t ptr;
         ptr = (uint32_t)(&hscroll_threshold) - (uint32_t)(&executable_memory) - 6;
         memcpy(executable_memory + 2, &ptr, 4);
@@ -179,6 +193,50 @@ BOOL func_init(FILTER* fp) {
     }
     DWORD oldProtect;
     VirtualProtect(&executable_memory, sizeof(executable_memory), PAGE_EXECUTE_READWRITE, &oldProtect);
+    { // ジャンプさせる
+        char code[] = "\xe9XXXX";
+        uint32_t ptr = (uint32_t)&executable_memory - (exedit_base + 0x3ded9) - 5;
+        memcpy_s(code + 1, 4, (void*)&ptr, 4);
+        for (int i = 0; i < sizeof(code) - 1; i++) {
+            exedit_Replace8(0x3ded9 + i, code[i]);
+        }
+    }
+
+
+    // タイムラインのズームに必要なホイール移動量を設定
+    static char executable_memory1[] =
+        "\x50"          // push eax
+        "\xe8XXXX"      // call &zoom_threshold
+        "\x83\xc4\x04"  // add esp,4
+        "\x85\xc0"      // test eax,eax
+        "\x0f\x84XXXX"  // jz exedit_base + 0x43b4c // 0が返ったら移動しない
+        "\xe9XXXX"      // jmp exedit_base + 0x3df6b
+        ;
+    { // 移動先書き込み
+        uint32_t ptr;
+        ptr = (uint32_t)(&zoom_threshold) - (uint32_t)(&executable_memory1) - 6;
+        memcpy(executable_memory1 + 2, &ptr, 4);
+        ptr = (uint32_t)(exedit_base + 0x43b4c - ((uint32_t)executable_memory1 + 13 + 4));
+        memcpy(executable_memory1 + 13, &ptr, 4);
+        ptr = (uint32_t)(exedit_base + 0x3df6b - ((uint32_t)executable_memory1 + sizeof(executable_memory1) - 5 + 4));
+        memcpy(executable_memory1 + sizeof(executable_memory1) - 5, &ptr, 4);
+    }
+    VirtualProtect(&executable_memory1, sizeof(executable_memory1), PAGE_EXECUTE_READWRITE, &oldProtect);
+    { // ジャンプさせる
+        char code[] =
+            "\xe9XXXX"
+            "\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90"
+            "\x8b\x15\x04\x53\x1a\x10"  // mov edx,dword ptr [DAT_101a5304]
+            "\x52"                      // push edx
+            "\x03\x05\xc4\x3f\x0a\x10"  // add eax,dword ptr [DAT_100a3fc4]
+            "\x50"                      // push eax
+            ;
+        uint32_t ptr = (uint32_t)&executable_memory1 - (exedit_base + 0x3df5c) - 5;
+        memcpy_s(code + 1, 4, (void*)&ptr, 4);
+        for (int i = 0; i < sizeof(code) - 1; i++) {
+            exedit_Replace8(0x3df5c + i, code[i]);
+        }
+    }
 
 
     // 横スクロールの固定値をやめて感度を設定する
@@ -218,6 +276,7 @@ BOOL func_init(FILTER* fp) {
     }
 
 #if 0
+    // テスト用初期化
     RAWINPUTDEVICE device[1];
     device[0].usUsagePage = 0x01;	// マウス用の定数
     device[0].usUsage = 0x02;		// マウス用の定数
@@ -286,6 +345,7 @@ BOOL func_WndProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam, void* e
 BOOL func_exit(FILTER* fp) {
     fp->exfunc->ini_save_int(fp, (LPSTR)"scroll_rate_w", scroll_rate_w);
     fp->exfunc->ini_save_int(fp, (LPSTR)"scroll_rate_h", scroll_rate_h);
+    fp->exfunc->ini_save_int(fp, (LPSTR)"scroll_rate_zoom", scroll_rate_zoom);
     fp->exfunc->ini_save_int(fp, (LPSTR)"enable_hwheel", enable_hwheel);
     fp->exfunc->ini_save_int(fp, (LPSTR)"enable_exchange_alt", enable_exchange_alt);
     fp->exfunc->ini_save_int(fp, (LPSTR)"enable_change_rate", enable_change_rate);
@@ -298,6 +358,7 @@ BOOL func_exit(FILTER* fp) {
 BOOL func_project_load(FILTER* fp, void* editp, void* data, int size) {
     fp->track[0] = fp->exfunc->ini_load_int(fp, (LPSTR)"scroll_rate_w", fp->track_default[0]);
     fp->track[1] = fp->exfunc->ini_load_int(fp, (LPSTR)"scroll_rate_h", fp->track_default[1]);
+    fp->track[2] = fp->exfunc->ini_load_int(fp, (LPSTR)"scroll_rate_zoom", fp->track_default[2]);
     fp->check[0] = fp->exfunc->ini_load_int(fp, (LPSTR)"enable_hwheel", fp->check_default[0]);
     fp->check[1] = fp->exfunc->ini_load_int(fp, (LPSTR)"enable_exchange_alt", fp->check_default[1]);
     fp->check[2] = fp->exfunc->ini_load_int(fp, (LPSTR)"enable_change_rate", fp->check_default[2]);
@@ -320,6 +381,7 @@ BOOL func_update(FILTER* fp, int status){
         // AviUtlがプロジェクト切り替えで勝手に書き換えるやつを更に元の値に書き換える
         fp->track[0] = scroll_rate_w;
         fp->track[1] = scroll_rate_h;
+        fp->track[2] = scroll_rate_zoom;
         fp->check[0] = enable_hwheel;
         fp->check[1] = enable_exchange_alt;
         fp->check[2] = enable_change_rate;
@@ -335,6 +397,11 @@ BOOL func_update(FILTER* fp, int status){
         tr = FindWindowEx(fp->hwnd, tr, "EDIT", 0);
         SetDlgItemInt(fp->hwnd, GetDlgCtrlID(tr), scroll_rate_h, false);
 
+        tr = FindWindowEx(fp->hwnd, 0, TRACKBAR_CLASS, track_name[2]);
+        SendMessage(tr, TBM_SETPOS, true, scroll_rate_zoom);
+        tr = FindWindowEx(fp->hwnd, tr, "EDIT", 0);
+        SetDlgItemInt(fp->hwnd, GetDlgCtrlID(tr), scroll_rate_zoom, false);
+
         SendMessage(FindWindowEx(fp->hwnd, 0, 0, check_name[0]), BM_SETCHECK, enable_hwheel, 0);
         SendMessage(FindWindowEx(fp->hwnd, 0, 0, check_name[1]), BM_SETCHECK, enable_exchange_alt, 0);
         SendMessage(FindWindowEx(fp->hwnd, 0, 0, check_name[2]), BM_SETCHECK, enable_change_rate, 0);
@@ -348,6 +415,10 @@ BOOL func_update(FILTER* fp, int status){
 
     case FILTER_UPDATE_STATUS_TRACK + 1:
         scroll_rate_h = fp->track[1];
+        break;
+
+    case FILTER_UPDATE_STATUS_TRACK + 2:
+        scroll_rate_zoom = fp->track[2];
         break;
 
     case FILTER_UPDATE_STATUS_CHECK + 0:
