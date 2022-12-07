@@ -96,7 +96,7 @@ BOOL exedit_func_WndProc_wrap(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpa
 
 
 // ホイール移動量を保存してしきい値を超えたらスクロールする
-int hscroll_threshold(int wheel) {
+int __stdcall hscroll_threshold(int wheel) {
     // 設定が無効なら単に1レイヤー分移動させる(デフォルト動作と同じ)
     if (enable_change_rate == 0 || scroll_rate_h == 0) { return (wheel < 0) * 2 - 1; }
 
@@ -117,7 +117,7 @@ int hscroll_threshold(int wheel) {
 
 
 // ctrl+ホイール移動量を保存してしきい値を超えたら拡大率を変更する
-int zoom_threshold(int wheel) {
+int  __stdcall zoom_threshold(int wheel) {
     // 設定が無効なら単に1移動させる(デフォルト動作と同じ)
     if (enable_change_rate == 0 || scroll_rate_zoom == 0) { return (wheel > 0) * 2 - 1; }
 
@@ -176,7 +176,6 @@ BOOL func_init(FILTER* fp) {
     static char executable_memory[] =
         "\x50"          // push eax
         "\xe8XXXX"      // call &hscroll_threshold
-        "\x83\xc4\x04"  // add esp,4
         "\x33\xd2"      // xor edx,edx
         "\x85\xc0"      // test eax,eax
         "\x0f\x84XXXX"  // jz exedit_base + 0x43b4c // 0が返ったら移動しない
@@ -186,10 +185,10 @@ BOOL func_init(FILTER* fp) {
         uint32_t ptr;
         ptr = (uint32_t)(&hscroll_threshold) - (uint32_t)(&executable_memory) - 6;
         memcpy(executable_memory + 2, &ptr, 4);
-        ptr = (uint32_t)(exedit_base + 0x43b4c - ((uint32_t)executable_memory + 15 + 4));
-        memcpy(executable_memory + 15, &ptr, 4);
-        ptr = (uint32_t)(exedit_base + 0x3dee4 - ((uint32_t)executable_memory + 20 + 4));
-        memcpy(executable_memory + 20, &ptr, 4);
+        ptr = (uint32_t)(exedit_base + 0x43b4c - ((uint32_t)executable_memory + 12 + 4));
+        memcpy(executable_memory + 12, &ptr, 4);
+        ptr = (uint32_t)(exedit_base + 0x3dee4 - ((uint32_t)executable_memory + 17 + 4));
+        memcpy(executable_memory + 17, &ptr, 4);
     }
     DWORD oldProtect;
     VirtualProtect(&executable_memory, sizeof(executable_memory), PAGE_EXECUTE_READWRITE, &oldProtect);
@@ -207,7 +206,6 @@ BOOL func_init(FILTER* fp) {
     static char executable_memory1[] =
         "\x50"          // push eax
         "\xe8XXXX"      // call &zoom_threshold
-        "\x83\xc4\x04"  // add esp,4
         "\x85\xc0"      // test eax,eax
         "\x0f\x84XXXX"  // jz exedit_base + 0x43b4c // 0が返ったら移動しない
         "\xe9XXXX"      // jmp exedit_base + 0x3df6b
@@ -216,8 +214,8 @@ BOOL func_init(FILTER* fp) {
         uint32_t ptr;
         ptr = (uint32_t)(&zoom_threshold) - (uint32_t)(&executable_memory1) - 6;
         memcpy(executable_memory1 + 2, &ptr, 4);
-        ptr = (uint32_t)(exedit_base + 0x43b4c - ((uint32_t)executable_memory1 + 13 + 4));
-        memcpy(executable_memory1 + 13, &ptr, 4);
+        ptr = (uint32_t)(exedit_base + 0x43b4c - ((uint32_t)executable_memory1 + 10 + 4));
+        memcpy(executable_memory1 + 10, &ptr, 4);
         ptr = (uint32_t)(exedit_base + 0x3df6b - ((uint32_t)executable_memory1 + sizeof(executable_memory1) - 5 + 4));
         memcpy(executable_memory1 + sizeof(executable_memory1) - 5, &ptr, 4);
     }
